@@ -13,6 +13,8 @@
       <PackageReference Include="AzureFromTheTrenches.Commanding.Abstractions" Version="9.0.2" />
       <PackageReference Include="FSharp.Core" Version="4.7.0" />
       <PackageReference Include="Handlebars.Net" Version="1.10.1" />
+      <PackageReference Include="Microsoft.AspNetCore.Authentication.Abstractions" Version="2.2.0" />
+      <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="3.1.0" />
       <PackageReference Include="Microsoft.Azure.WebJobs.Extensions" Version="3.0.5" />
       <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.CosmosDB" Version="3.0.5" />
       <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.EventHubs" Version="4.1.0" />
@@ -28,6 +30,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\FunctionMonkey.AspNetCore\FunctionMonkey.AspNetCore.csproj" />
       <ProjectReference Include="..\FunctionMonkey.Commanding.Abstractions\FunctionMonkey.Commanding.Abstractions.csproj" />
       <ProjectReference Include="..\FunctionMonkey.SignalR\FunctionMonkey.SignalR.csproj" />
       <ProjectReference Include="..\FunctionMonkey\FunctionMonkey.csproj" />
@@ -164,6 +167,7 @@
       <EmbeddedResource Include="references\netstandard2.0\System.Xml.XPath.dll" />
       <EmbeddedResource Include="references\netstandard2.0\System.Xml.XPath.XDocument.dll" />
       <EmbeddedResource Include="Templates\AspNetCore\forcereference.csharp.handlebars" />
+      <EmbeddedResource Include="Templates\AspNetCore\swaggerui.csharp.handlebars" />
       <EmbeddedResource Include="Templates\AzureFunctions\cosmosdb.csharp.handlebars" />
       <EmbeddedResource Include="Templates\AzureFunctions\cosmosdb.json.handlebars" />
       <EmbeddedResource Include="Templates\AzureFunctions\cosmosdb.outputparameter.csharp.handlebars" />
@@ -209,6 +213,10 @@
       <EmbeddedResource Include="Templates\AspNetCore\startup.csharp.handlebars" />
       <None Remove="Templates\AspNetCore\controller.csharp.handlebars" />
       <EmbeddedResource Include="Templates\AspNetCore\controller.csharp.handlebars" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="Implementation\Client" />
     </ItemGroup>
   <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
     <Exec Command="yarn" />

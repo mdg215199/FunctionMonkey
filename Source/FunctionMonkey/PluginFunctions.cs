@@ -1,12 +1,13 @@
 using System;
 using System.Security.Claims;
+using System.Threading;
 using System.Threading.Tasks;
 using FunctionMonkey.Commanding.Abstractions.Validation;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FunctionMonkey
 {
-    public class PluginFunctions : AbstractPluginFunctions // where TCommand : ICommand
+    public class PluginFunctions : AbstractPluginFunctions
     {
         public Func<string, Task<ClaimsPrincipal>> ValidateToken { get; set; }
 

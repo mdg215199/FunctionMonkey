@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Reflection;
 using FunctionMonkey.Abstractions.Builders.Model;
+using FunctionMonkey.Compiler.Core.Implementation.OpenApi;
+using FunctionMonkey.Model;
 
 namespace FunctionMonkey.Compiler.Core.Implementation
 {
@@ -14,7 +16,9 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             IReadOnlyCollection<string> externalAssemblyLocations,
             string outputBinaryFolder,
             string assemblyName,
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             string outputAuthoredSourceFolder = null);
+        
+        OpenApiOutputModel OpenApiOutputModel { get; set; }
     }
 }

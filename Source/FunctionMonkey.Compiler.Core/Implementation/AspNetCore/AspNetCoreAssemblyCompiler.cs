@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using AzureFromTheTrenches.Commanding.Abstractions;
 using FunctionMonkey.Abstractions.Builders.Model;
+using FunctionMonkey.Compiler.Core.Implementation.OpenApi;
 using FunctionMonkey.Model;
 using HandlebarsDotNet;
 using Microsoft.AspNetCore.Builder;
@@ -17,46 +19,36 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-namespace FunctionMonkey.Compiler.Core.Implementation
+namespace FunctionMonkey.Compiler.Core.Implementation.AspNetCore
 {
     internal class AspNetCoreAssemblyCompiler : AssemblyCompilerBase
     {
         public AspNetCoreAssemblyCompiler(ICompilerLog compilerLog, ITemplateProvider templateProvider = null) : base(compilerLog, templateProvider)
         {
         }
-
+        
         protected override List<SyntaxTree> CompileSource(
             IReadOnlyCollection<AbstractFunctionDefinition> functionDefinitions,
-            Type backlinkType,
-            PropertyInfo backlinkPropertyInfo,
             string newAssemblyNamespace,
-            string outputAuthoredSourceFolder)
+            DirectoryInfo outputAuthoredSourceFolder)
         {
             List<SyntaxTree> syntaxTrees = new List<SyntaxTree>();
-            DirectoryInfo directoryInfo =  outputAuthoredSourceFolder != null ? new DirectoryInfo(outputAuthoredSourceFolder) : null;
-            if (directoryInfo != null && !directoryInfo.Exists)
+            
+            HttpFunctionDefinition[] httpFunctions = functionDefinitions
+                .Where(x => x is HttpFunctionDefinition)
+                .Cast<HttpFunctionDefinition>()
+                .ToArray();
+            
+            syntaxTrees.Add(CreateStartup(newAssemblyNamespace, outputAuthoredSourceFolder, httpFunctions));
+            foreach (HttpFunctionDefinition httpFunctionDefinition in httpFunctions)
             {
-                directoryInfo = null;
-            }
-
-            syntaxTrees.Add(CreateStartup(newAssemblyNamespace, directoryInfo));
-            foreach (AbstractFunctionDefinition abstractFunctionDefinition in functionDefinitions)
-            {
-                if (abstractFunctionDefinition is HttpFunctionDefinition httpFunctionDefinition)
-                {
-                    syntaxTrees.Add(CreateController(newAssemblyNamespace, directoryInfo, httpFunctionDefinition));
-                }
+                syntaxTrees.Add(CreateController(newAssemblyNamespace, outputAuthoredSourceFolder, httpFunctionDefinition));
             }
 
             return syntaxTrees;
         }
-
-        protected override List<ResourceDescription> CreateResources(string assemblyNamespace)
-        {
-            return null;
-        }
-
-        protected override IReadOnlyCollection<string> BuildCandidateReferenceList(CompileTargetEnum compileTarget, bool isFSharpProject)
+        
+        protected override IReadOnlyCollection<string> BuildCandidateReferenceList(CompilerOptions compilerOptions, bool isFSharpProject)
         {
             HashSet<string> locations = new HashSet<string>
             {
@@ -74,22 +66,43 @@ namespace FunctionMonkey.Compiler.Core.Implementation
                 typeof(IEndpointRouteBuilder).Assembly.Location,
                 typeof(ICommandDispatcher).Assembly.Location,
                 typeof(ActionResult).Assembly.Location,
-                typeof(Task).Assembly.Location
+                typeof(IActionResult).Assembly.Location,
+                typeof(Task).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Authentication.AuthenticationBuilder).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Authorization.AuthorizeAttribute).Assembly.Location,
+                typeof(FunctionMonkey.AspNetCore.AuthenticationOptions).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Authentication.IAuthenticationHandler).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Builder.AuthorizationAppBuilderExtensions).Assembly.Location,
+                typeof(Microsoft.Extensions.Logging.ILogger).Assembly.Location,
+                typeof(Microsoft.Extensions.Configuration.IConfiguration).Assembly.Location,
+                typeof(Microsoft.Extensions.Configuration.ConfigurationBinder).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Http.IHeaderDictionary).Assembly.Location,
+                typeof(Microsoft.AspNetCore.Http.HttpRequest).Assembly.Location,
+                typeof(Microsoft.Extensions.Primitives.StringValues).Assembly.Location,
+                // Remove the below two lines when we can drop Newtonsoft Json - that requires resolving how to ignore
+                // properties with 
+                typeof(Microsoft.Extensions.DependencyInjection.NewtonsoftJsonMvcBuilderExtensions).Assembly.Location,
+                typeof(Newtonsoft.Json.JsonSerializerSettings).Assembly.Location
             };
 
             return locations;
         }
-
-        private SyntaxTree CreateStartup(string namespaceName, DirectoryInfo directoryInfo)
+        
+        private SyntaxTree CreateStartup(string namespaceName,
+            DirectoryInfo directoryInfo,
+            IReadOnlyCollection<HttpFunctionDefinition> functions)
         {
             string startupTemplateSource = TemplateProvider.GetTemplate("startup","csharp");
             Func<object, string> template = Handlebars.Compile(startupTemplateSource);
 
-            string outputCode = template(new
+            var startupOptions = new
             {
                 Namespace = namespaceName,
-                OpenApiEnabled = false
-            });
+                UsesTokenValidation = functions.Any(x => x.ValidatesToken),
+                SetEnvironmentVariables =
+                    true // this causes app settings specified like Azure Functions to be set as environment variables
+            };
+            string outputCode = template(startupOptions);
             OutputDiagnosticCode(directoryInfo, "Startup", outputCode);
             
             SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(outputCode, path:$"Startup.cs");

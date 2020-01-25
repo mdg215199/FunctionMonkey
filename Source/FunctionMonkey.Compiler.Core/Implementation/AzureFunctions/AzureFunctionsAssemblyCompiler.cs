@@ -3,15 +3,13 @@ using System.Collections.Generic;
 using System.Data.Common;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Runtime.Versioning;
 using System.Text;
-using System.Threading.Tasks;
 using FunctionMonkey.Abstractions.Builders.Model;
-using FunctionMonkey.Abstractions.Extensions;
 using FunctionMonkey.Commanding.Abstractions;
-using FunctionMonkey.Compiler.Core.HandlebarsHelpers;
+using FunctionMonkey.Compiler.Core.HandlebarsHelpers.AzureFunctions;
+using FunctionMonkey.Compiler.Core.Implementation.OpenApi;
+using FunctionMonkey.Model;
 using FunctionMonkey.SignalR;
 using HandlebarsDotNet;
 using Microsoft.AspNetCore.Http;
@@ -23,15 +21,13 @@ using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.WebJobs;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Emit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
-using Microsoft.FSharp.Core;
 using Newtonsoft.Json;
 using ExecutionContext = Microsoft.Azure.WebJobs.ExecutionContext;
 
-namespace FunctionMonkey.Compiler.Core.Implementation
+namespace FunctionMonkey.Compiler.Core.Implementation.AzureFunctions
 {
     internal class AzureFunctionsAssemblyCompiler : AssemblyCompilerBase
     {
@@ -40,41 +36,23 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             
         }
         
-        public OpenApiOutputModel OpenApiOutputModel { get; set; }
-
         protected override List<SyntaxTree> CompileSource(IReadOnlyCollection<AbstractFunctionDefinition> functionDefinitions,
-            Type backlinkType,
-            PropertyInfo backlinkPropertyInfo,
             string newAssemblyNamespace,
-            string outputAuthoredSourceFolder)
+            DirectoryInfo outputAuthoredSourceFolder)
         {
             List<SyntaxTree> syntaxTrees = new List<SyntaxTree>();
-            DirectoryInfo directoryInfo =  outputAuthoredSourceFolder != null ? new DirectoryInfo(outputAuthoredSourceFolder) : null;
-            if (directoryInfo != null && !directoryInfo.Exists)
-            {
-                directoryInfo = null;
-            }
             foreach (AbstractFunctionDefinition functionDefinition in functionDefinitions)
             {
                 string templateSource = TemplateProvider.GetCSharpTemplate(functionDefinition);
-                AddSyntaxTreeFromHandlebarsTemplate(templateSource, functionDefinition.Name, functionDefinition, directoryInfo, syntaxTrees);
+                AddSyntaxTreeFromHandlebarsTemplate(templateSource, functionDefinition.Name, functionDefinition, outputAuthoredSourceFolder, syntaxTrees);
             }
-
-            if (OpenApiOutputModel != null && OpenApiOutputModel.IsConfiguredForUserInterface)
-            {
-                string templateSource = TemplateProvider.GetTemplate("swaggerui","csharp");
-                AddSyntaxTreeFromHandlebarsTemplate(templateSource, "SwaggerUi", new
-                {
-                    Namespace = newAssemblyNamespace
-                }, directoryInfo, syntaxTrees);
-            }
-
+            
             {
                 string templateSource = TemplateProvider.GetTemplate("startup", "csharp");
                 AddSyntaxTreeFromHandlebarsTemplate(templateSource, "Startup", new
                 {
                     Namespace = newAssemblyNamespace
-                }, directoryInfo, syntaxTrees);
+                }, outputAuthoredSourceFolder, syntaxTrees);
             }
 
             return syntaxTrees;
@@ -84,43 +62,13 @@ namespace FunctionMonkey.Compiler.Core.Implementation
         private static void AddSyntaxTreeFromHandlebarsTemplate(string templateSource, string name,
             object functionDefinition, DirectoryInfo directoryInfo, List<SyntaxTree> syntaxTrees)
         {
-            Func<object, string> template = Handlebars.Compile(templateSource);
-
-            string outputCode = template(functionDefinition);
-            OutputDiagnosticCode(directoryInfo, name, outputCode);
-
-            SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(outputCode, path:$"{name}.cs");
-            //syntaxTree = syntaxTree.WithFilePath($"{name}.cs");
+            SyntaxTree syntaxTree =
+                CreateSyntaxTreeFromHandlebarsTemplate(templateSource, name, functionDefinition, directoryInfo);
             syntaxTrees.Add(syntaxTree);
         }
         
-        protected override List<ResourceDescription> CreateResources(string assemblyNamespace)
-        {
-            List<ResourceDescription> resources = null;
-            if (OpenApiOutputModel != null)
-            {
-                resources = new List<ResourceDescription>();
-                Debug.Assert(OpenApiOutputModel.OpenApiSpecification != null);
-                resources.Add(new ResourceDescription(
-                    $"{assemblyNamespace}.OpenApi.{OpenApiOutputModel.OpenApiSpecification.Filename}",
-                    () => new MemoryStream(Encoding.UTF8.GetBytes(OpenApiOutputModel.OpenApiSpecification.Content)), true));
-                if (OpenApiOutputModel.SwaggerUserInterface != null)
-                {
-                    foreach (OpenApiFileReference fileReference in OpenApiOutputModel.SwaggerUserInterface)
-                    {
-                        OpenApiFileReference closureCapturedFileReference = fileReference;
-                        resources.Add(new ResourceDescription(
-                            $"{assemblyNamespace}.OpenApi.{closureCapturedFileReference.Filename}",
-                            () => new MemoryStream(Encoding.UTF8.GetBytes(closureCapturedFileReference.Content)), true));
-                    }
-                }
-            }
-
-            return resources;
-        }
-
         protected override IReadOnlyCollection<string> BuildCandidateReferenceList(
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             bool isFSharpProject)
         {
             // These are assemblies that Roslyn requires from usage within the template

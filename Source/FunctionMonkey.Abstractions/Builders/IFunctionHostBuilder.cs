@@ -11,11 +11,25 @@ namespace FunctionMonkey.Abstractions.Builders
     public interface IFunctionHostBuilder
     {
         /// <summary>
+        /// Surfaces an IServiceCollection into which dependencies (can be registered
+        /// </summary>
+        /// <param name="services">An action that will be given a service collection</param>
+        /// <returns>The function host builder for use in a Fluent API</returns>
+        IFunctionHostBuilder Setup(Action<IServiceCollection> services);
+        
+        /// <summary>
         /// Surfaces an IServiceCollection into which dependencies (for command handlers) can be registered
         /// </summary>
         /// <param name="services">An action that will be given a command registry and service collection</param>
         /// <returns>The function host builder for use in a Fluent API</returns>
         IFunctionHostBuilder Setup(Action<IServiceCollection, ICommandRegistry> services);
+
+        /// <summary>
+        /// Allows a mediator to be registered
+        /// </summary>
+        /// <typeparam name="TMediator">The concrete type of the mediator</typeparam>
+        /// <returns>The function host builder for use in a Fluent API</returns>
+        IFunctionHostBuilder Mediator<TMediator>() where TMediator : IMediatorDecorator;
 
         /// <summary>
         /// Allows the default setting names to be specified - see ConnectionStringSettingNames for the defaults.
@@ -70,12 +84,6 @@ namespace FunctionMonkey.Abstractions.Builders
         /// <param name="openApi">Open API builder</param>
         /// <returns>The function host builder to support a Fluent API</returns>
         IFunctionHostBuilder OpenApiEndpoint(Action<IOpenApiBuilder> openApi);
-
-        /// <summary>
-        /// A diagnostic option to output the source that has been authored for the Function triggers
-        /// </summary>
-        /// <param name="folder">The folder to output to</param>
-        IFunctionHostBuilder OutputAuthoredSource(string folder);
 
         /// <summary>
         /// Allows default for serialization to be configured

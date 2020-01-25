@@ -62,9 +62,24 @@ namespace FunctionMonkey
             ServiceCollection = serviceCollection ?? new ServiceCollection();
             BuiltServiceProvider = new Lazy<IServiceProvider>(() => ServiceCollection.BuildServiceProvider());
 
-            // Find the configuration implementation and service collection
-            IFunctionAppConfiguration configuration = LocateConfiguration(functionAppConfigurationAssembly);
+            FunctionAppHostBuilder appHostBuilder = null;
+            IFunctionAppConfiguration configuration = null;
+            IFunctionAppHost appHost = ConfigurationLocator.FindFunctionAppHost(functionAppConfigurationAssembly);
+            if (appHost != null)
+            {
+                appHostBuilder = new FunctionAppHostBuilder();
+                appHost.Build(appHostBuilder);
+                if (appHostBuilder.FunctionAppConfiguration != null)
+                {
+                    configuration = (IFunctionAppConfiguration)Activator.CreateInstance(appHostBuilder.FunctionAppConfiguration);
+                }
+            }
 
+            if (configuration == null)
+            {
+                configuration = ConfigurationLocator.FindConfiguration(functionAppConfigurationAssembly);
+            }
+            
             CommandingDependencyResolverAdapter adapter = new CommandingDependencyResolverAdapter(
                 (fromType, toInstance) => ServiceCollection.AddSingleton(fromType, toInstance),
                 (fromType, toType) => ServiceCollection.AddTransient(fromType, toType),
@@ -93,6 +108,10 @@ namespace FunctionMonkey
             {
                 // Invoke the builder process
                 builder = CreateBuilderFromConfiguration(commandRegistry, configuration);
+                if (appHostBuilder != null)
+                {
+                    builder.Options = appHostBuilder.Options;
+                }
                 FunctionBuilder functionBuilder = (FunctionBuilder)builder.FunctionBuilder;
                 FunctionDefinitions = builder.FunctionDefinitions;
                 compileTarget = builder.Options.HttpTarget;
@@ -102,10 +121,10 @@ namespace FunctionMonkey
             {
                 functionCompilerMetadata = LocateFunctionCompilerMetadata(functionAppConfigurationAssembly);
                 FunctionDefinitions = functionCompilerMetadata.FunctionDefinitions;
-                compileTarget = functionCompilerMetadata.CompileTarget;
+                compileTarget = functionCompilerMetadata.CompilerOptions.HttpTarget;
             }
 
-            RegisterCoreDependencies(FunctionDefinitions, compileTarget);
+            RegisterCoreDependencies(builder.MediatorType, FunctionDefinitions, compileTarget);
 
             RegisterTimerCommandFactories(FunctionDefinitions);
 
@@ -115,11 +134,29 @@ namespace FunctionMonkey
 
             CreatePluginFunctions(functionCompilerMetadata?.ClaimsMappings, FunctionDefinitions);
 
+            RegisterLoggerIfRequired();
+
             //beforeServiceProviderBuild?.Invoke(ServiceCollection, commandRegistry);
             //ServiceProvider = containerProvider.CreateServiceProvider(ServiceCollection);
             //afterServiceProviderBuild?.Invoke(ServiceProvider, commandRegistry);
 
             //builder?.ServiceProviderCreatedAction?.Invoke(ServiceProvider);
+        }
+
+        private void RegisterLoggerIfRequired()
+        {
+            // Ensure we have an uncategorised ILogger registered, we may not in ASP.Net Core
+            if (ServiceCollection.All(x => x.ServiceType != typeof(ILogger)))
+            {
+                if (ServiceCollection.Any(x => x.ServiceType == typeof(ILoggerFactory)))
+                {
+                    ServiceCollection.AddTransient(typeof(ILogger), sp =>
+                    {
+                        ILoggerFactory loggerFactory = sp.GetService<ILoggerFactory>();
+                        return loggerFactory.CreateLogger("common");
+                    });
+                }
+            }
         }
 
         private ISerializer CreateSerializer(AbstractFunctionDefinition functionDefinition)
@@ -151,6 +188,8 @@ namespace FunctionMonkey
             {
                 PluginFunctions pluginFunctions = new PluginFunctions();
                 
+                pluginFunctions.Handler = functionDefinition.FunctionHandler;
+                
                 if (functionDefinition.DeserializeFunction != null)
                 {
                     pluginFunctions.Deserialize = (body, enforceSecurityProperties) =>
@@ -174,9 +213,7 @@ namespace FunctionMonkey
                     pluginFunctions.Serialize = (content, enforceSecurityProperties) =>
                         CreateSerializer(functionDefinition).Serialize(content, enforceSecurityProperties);
                 }
-                
-                pluginFunctions.Handler = functionDefinition.FunctionHandler;
-                
+
                 if (functionDefinition.ValidatorFunction != null)
                 {
                     pluginFunctions.Validate = obj =>
@@ -189,7 +226,7 @@ namespace FunctionMonkey
                         var validator = (FunctionMonkey.Abstractions.Validation.IValidator)
                             ServiceProvider.GetService(
                                 typeof(FunctionMonkey.Abstractions.Validation.IValidator));
-                        var validationResult = validator.Validate((ICommand) command);
+                        var validationResult = validator.Validate(command);
                         return validationResult;
                     };
                 }
@@ -239,10 +276,12 @@ namespace FunctionMonkey
                     {
                         pluginFunctions.ValidateToken = async (authorizationHeader) =>
                         {
-                            var tokenValidator = (FunctionMonkey.Abstractions.ITokenValidator)
+                            /*var tokenValidator = (FunctionMonkey.Abstractions.ITokenValidator)
                                 ServiceProvider.GetService(httpFunctionDefinition
-                                    .TokenValidatorType);
+                                    .TokenValidatorType);*/
+                            ITokenValidator tokenValidator = ServiceProvider.GetService<ITokenValidator>();
                             ClaimsPrincipal principal = await tokenValidator.ValidateAsync(authorizationHeader);
+                            
                             return principal;
                         };
                         
@@ -318,7 +357,7 @@ namespace FunctionMonkey
                             var responseHandler =
                                 (IHttpResponseHandler) ServiceProvider.GetService(
                                     httpFunctionDefinition.HttpResponseHandlerType);
-                            return responseHandler.CreateValidationFailureResponse((ICommand) command, (ValidationResult)validationResult);
+                            return responseHandler.CreateValidationFailureResponse(command, (ValidationResult)validationResult);
                         };
                         
                         pluginFunctions.CreateResponseForResult = (command, result) =>
@@ -326,21 +365,21 @@ namespace FunctionMonkey
                             var responseHandler =
                                 (IHttpResponseHandler) ServiceProvider.GetService(
                                     httpFunctionDefinition.HttpResponseHandlerType);
-                            return responseHandler.CreateResponse((ICommand) command, result);
+                            return responseHandler.CreateResponse(command, result);
                         };
                         pluginFunctions.CreateResponse = command =>
                         {
                             var responseHandler =
                                 (IHttpResponseHandler) ServiceProvider.GetService(
                                     httpFunctionDefinition.HttpResponseHandlerType);
-                            return responseHandler.CreateResponse((ICommand) command);
+                            return responseHandler.CreateResponse(command);
                         };
                         pluginFunctions.CreateResponseFromException = (command, exception) =>
                         {
                             var responseHandler =
                                 (IHttpResponseHandler) ServiceProvider.GetService(
                                     httpFunctionDefinition.HttpResponseHandlerType);
-                            return responseHandler.CreateResponseFromException((ICommand) command, exception);
+                            return responseHandler.CreateResponseFromException(command, exception);
                         };
                     }
                     else
@@ -391,9 +430,11 @@ namespace FunctionMonkey
         }
 
         private void RegisterCoreDependencies(
+            Type mediatorType,
             IReadOnlyCollection<AbstractFunctionDefinition> functionDefinitions,
             CompileTargetEnum target)
         {
+            ServiceCollection.AddTransient(typeof(IMediatorDecorator), mediatorType);
             HashSet<Type> types = new HashSet<Type>();
             foreach (AbstractFunctionDefinition abstractFunctionDefinition in functionDefinitions)
             {
@@ -416,6 +457,7 @@ namespace FunctionMonkey
             IReadOnlyCollection<AbstractFunctionDefinition> builderFunctionDefinitions)
         {
             HashSet<Type> types = new HashSet<Type>();
+            Type tokenValidatorType = null;
             foreach (AbstractFunctionDefinition abstractFunctionDefinition in builderFunctionDefinitions)
             {
                 if (abstractFunctionDefinition is HttpFunctionDefinition httpFunctionDefinition)
@@ -432,11 +474,24 @@ namespace FunctionMonkey
 
                     if (httpFunctionDefinition.TokenValidatorType != null)
                     {
-                        types.Add(httpFunctionDefinition.TokenValidatorType);
+                        if (tokenValidatorType != null &&
+                            httpFunctionDefinition.TokenValidatorType != tokenValidatorType)
+                        {
+                            // this shouldn't happen as the builder interface doesn't allow it
+                            // TODO: Remove TokenValidatorType from the HttpFunctionDefinition once we've completed
+                            // the registration against ITokenValidator
+                            throw new ConfigurationException("Only one token validator type can be set");
+                        }
+                        tokenValidatorType = httpFunctionDefinition.TokenValidatorType;
                     }
                 }
             }
 
+            if (tokenValidatorType != null)
+            {
+                ServiceCollection.AddTransient(typeof(ITokenValidator), tokenValidatorType);
+            }
+            
             foreach (Type claimsPrincipalAuthorizationType in types)
             {
                 ServiceCollection.AddTransient(claimsPrincipalAuthorizationType);
@@ -483,13 +538,20 @@ namespace FunctionMonkey
         {
             FunctionHostBuilder builder = new FunctionHostBuilder(ServiceCollection, commandRegistry, true);
             configuration.Build(builder);
+            DefaultMediatorSettings.SetDefaultsIfRequired(builder);
             RegisterCommandHandlersForCommandsWithNoAssociatedHandler(builder, commandRegistry);
-            new PostBuildPatcher().Patch(builder, "");
+            IMediatorResultTypeExtractor extractor = (IMediatorResultTypeExtractor)Activator.CreateInstance(builder.Options.MediatorResultTypeExtractor);
+            
+            new PostBuildPatcher(extractor).Patch(builder, "");
             return builder;
         }
 
         private void RegisterCommandHandlersForCommandsWithNoAssociatedHandler(FunctionHostBuilder builder, ICommandRegistry commandRegistry)
         {
+            // TODO: We can improve this so that auto-registration is decoupled and can be provided by a mediator package
+            if (builder.MediatorType != typeof(DefaultMediatorDecorator))
+                return;
+            
             // IN PROGRESS: This looks from the loaded set of assemblies and looks for a command handler for each command associated with a function.
             // If the handler is not already registered in the command registry then this registers it.
             IRegistrationCatalogue registrationCatalogue = (IRegistrationCatalogue) commandRegistry;

@@ -4,17 +4,18 @@
 // ------------------------------------------------------------
 // modified from https://github.com/Microsoft/OpenAPI.NET.CSharpAnnotations
 
-using AzureFromTheTrenches.Commanding.Abstractions;
-using FunctionMonkey.Compiler.Core.Extensions;
-using Microsoft.OpenApi.Any;
-using Microsoft.OpenApi.Models;
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
+using AzureFromTheTrenches.Commanding.Abstractions;
+using FunctionMonkey.Compiler.Core.Extensions;
+using FunctionMonkey.Compiler.Core.Implementation.OpenApi;
+using Microsoft.OpenApi.Any;
+using Microsoft.OpenApi.Models;
+using Newtonsoft.Json;
 
-namespace FunctionMonkey.Compiler.Core.Implementation
+namespace FunctionMonkey.Compiler.Core.Implementation.AzureFunctions
 {
     internal class SchemaReferenceRegistry
     {

@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using AzureFromTheTrenches.Commanding.Abstractions;
+using FunctionMonkey.Abstractions;
 using FunctionMonkey.Abstractions.Builders;
 using FunctionMonkey.Abstractions.Builders.Model;
 using FunctionMonkey.Abstractions.Http;
 using FunctionMonkey.Abstractions.Validation;
+using FunctionMonkey.Infrastructure;
 using FunctionMonkey.Model;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -20,13 +22,13 @@ namespace FunctionMonkey.Builders
         public IAuthorizationBuilder AuthorizationBuilder { get; } = new AuthorizationBuilder();
         public Type ValidatorType { get; set; }
         public OpenApiConfiguration OpenApiConfiguration { get; } = new OpenApiConfiguration();
-        public string OutputAuthoredSourceFolder { get; private set; }
         public HeaderBindingConfiguration DefaultHeaderBindingConfiguration { get; private set; }
         public Type DefaultHttpResponseHandlerType { get; private set; }
         public ISerializationBuilder SerializationBuilder { get; } = new SerializationBuilder();
         public ConnectionStringSettingNames ConnectionStringSettingNames { get; } = new ConnectionStringSettingNames();
-        public CompilerOptions Options { get; } = new CompilerOptions();
-
+        public CompilerOptions Options { get; set; } = new CompilerOptions();
+        public Type MediatorType { get; set; } = typeof(DefaultMediatorDecorator);
+        
         public FunctionHostBuilder(IServiceCollection serviceCollection,
             ICommandRegistry commandRegistry, bool isRuntime)
         {
@@ -42,6 +44,21 @@ namespace FunctionMonkey.Builders
             {
                 services(ServiceCollection, CommandRegistry);
             }
+            return this;
+        }
+        
+        public IFunctionHostBuilder Setup(Action<IServiceCollection> services)
+        {
+            if (_isRuntime)
+            {
+                services(ServiceCollection);
+            }
+            return this;
+        }
+
+        public IFunctionHostBuilder Mediator<TMediator>() where TMediator : IMediatorDecorator
+        {
+            MediatorType = typeof(TMediator);
             return this;
         }
 
@@ -85,12 +102,6 @@ namespace FunctionMonkey.Builders
         public IFunctionHostBuilder OpenApiEndpoint(Action<IOpenApiBuilder> openApi)
         {
             openApi(new OpenApiBuilder(OpenApiConfiguration));
-            return this;
-        }
-
-        public IFunctionHostBuilder OutputAuthoredSource(string folder)
-        {
-            OutputAuthoredSourceFolder = folder;
             return this;
         }
 

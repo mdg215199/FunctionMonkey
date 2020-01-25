@@ -5,10 +5,16 @@
     <AssemblyName>FunctionMonkey.Tests.Integration.Functions</AssemblyName>
     <RootNamespace>FunctionMonkey.Tests.Integration.Functions</RootNamespace>
   </PropertyGroup>
+
+  <Target Name="OutputAMessage" AfterTargets="Build" Condition="'$(AzureFunctionsVersion)' == 'V3'">
+    <Message Text="******* Some Message $(AzureFunctionsVersion) dodo" Importance="high" />
+  </Target>
+  
   <ItemGroup>
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.CosmosDB" Version="3.0.5" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.EventHubs" Version="4.1.0" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.ServiceBus" Version="4.0.0" />
+    <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.SignalRService" Version="1.0.2" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.Storage" Version="3.0.10" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="3.0.2" />
   </ItemGroup>
@@ -18,6 +24,7 @@
     <ProjectReference Include="..\..\Source\FunctionMonkey.FluentValidation\FunctionMonkey.FluentValidation.csproj" />
     <ProjectReference Include="..\..\Source\FunctionMonkey.SignalR\FunctionMonkey.SignalR.csproj" />
     <ProjectReference Include="..\..\Source\FunctionMonkey\FunctionMonkey.csproj" />
+    <ProjectReference Include="..\FunctionMonkey.Tests.Integration.Common\FunctionMonkey.Tests.Integration.Common.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">

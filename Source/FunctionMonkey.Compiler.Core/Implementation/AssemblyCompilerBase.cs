@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Versioning;
+using System.Text;
 using System.Threading.Tasks;
 using FunctionMonkey.Abstractions.Builders.Model;
 using FunctionMonkey.Abstractions.Extensions;
-using FunctionMonkey.Compiler.Core.HandlebarsHelpers;
+using FunctionMonkey.Compiler.Core.Implementation.OpenApi;
+using FunctionMonkey.Model;
 using HandlebarsDotNet;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -27,20 +30,43 @@ namespace FunctionMonkey.Compiler.Core.Implementation
         public ICompilerLog CompilerLog { get; }
 
         public ITemplateProvider TemplateProvider { get; }
+        
+        public OpenApiOutputModel OpenApiOutputModel { get; set; }
 
         protected abstract List<SyntaxTree> CompileSource(
             IReadOnlyCollection<AbstractFunctionDefinition> functionDefinitions,
-            Type backlinkType,
-            PropertyInfo backlinkPropertyInfo,
             string newAssemblyNamespace,
-            string outputAuthoredSourceFolder);
+            DirectoryInfo outputAuthoredSourceFolder);
 
-        protected abstract List<ResourceDescription> CreateResources(string assemblyNamespace);
+        protected List<ResourceDescription> CreateResources(string assemblyNamespace)
+        {
+            List<ResourceDescription> resources = null;
+            if (OpenApiOutputModel != null)
+            {
+                resources = new List<ResourceDescription>();
+                Debug.Assert(OpenApiOutputModel.OpenApiSpecification != null);
+                resources.Add(new ResourceDescription(
+                    $"{assemblyNamespace}.OpenApi.{OpenApiOutputModel.OpenApiSpecification.Filename}",
+                    () => new MemoryStream(Encoding.UTF8.GetBytes(OpenApiOutputModel.OpenApiSpecification.Content)), true));
+                if (OpenApiOutputModel.SwaggerUserInterface != null)
+                {
+                    foreach (OpenApiFileReference fileReference in OpenApiOutputModel.SwaggerUserInterface)
+                    {
+                        OpenApiFileReference closureCapturedFileReference = fileReference;
+                        resources.Add(new ResourceDescription(
+                            $"{assemblyNamespace}.OpenApi.{closureCapturedFileReference.Filename}",
+                            () => new MemoryStream(Encoding.UTF8.GetBytes(closureCapturedFileReference.Content)), true));
+                    }
+                }
+            }
+
+            return resources;
+        }
 
         protected abstract IReadOnlyCollection<string> BuildCandidateReferenceList(
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             bool isFSharpProject);
-        
+
         public bool Compile(IReadOnlyCollection<AbstractFunctionDefinition> functionDefinitions,
             Type backlinkType,
             PropertyInfo backlinkPropertyInfo,
@@ -48,19 +74,28 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             IReadOnlyCollection<string> externalAssemblyLocations,
             string outputBinaryFolder,
             string assemblyName,
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             string outputAuthoredSourceFolder = null)
         {
-            HandlebarsHelperRegistration.RegisterHelpers();
+            DirectoryInfo directoryInfo =  outputAuthoredSourceFolder != null ? new DirectoryInfo(outputAuthoredSourceFolder) : null;
+            if (directoryInfo != null && !directoryInfo.Exists)
+            {
+                directoryInfo = null;
+            }
+            
             List<SyntaxTree> syntaxTrees = CompileSource(functionDefinitions,
-                backlinkType,
-                backlinkPropertyInfo,
                 newAssemblyNamespace,
-                outputAuthoredSourceFolder).ToList();
-            SyntaxTree linkBackTree = CreateLinkBack(functionDefinitions, backlinkType, backlinkPropertyInfo, newAssemblyNamespace, outputAuthoredSourceFolder);
+                directoryInfo).ToList();
+            SyntaxTree linkBackTree = CreateLinkBack(functionDefinitions, backlinkType, backlinkPropertyInfo, newAssemblyNamespace, directoryInfo);
             if (linkBackTree != null)
             {
                 syntaxTrees.Add(linkBackTree);
+            }
+
+            SyntaxTree openApiTree = CreateOpenApiTree(newAssemblyNamespace, directoryInfo);
+            if (openApiTree != null)
+            {
+                syntaxTrees.Add(openApiTree);
             }
 
             bool isFSharpProject = functionDefinitions.Any(x => x.IsFunctionalFunction);
@@ -71,8 +106,34 @@ namespace FunctionMonkey.Compiler.Core.Implementation
                 outputBinaryFolder,
                 assemblyName,
                 newAssemblyNamespace,
-                compileTarget,
+                compilerOptions,
                 isFSharpProject);
+        }
+
+        private SyntaxTree CreateOpenApiTree(string newAssemblyNamespace, DirectoryInfo directoryInfo)
+        {
+            if (OpenApiOutputModel != null && OpenApiOutputModel.IsConfiguredForUserInterface)
+            {
+                string templateSource = TemplateProvider.GetTemplate("swaggerui","csharp");
+                return CreateSyntaxTreeFromHandlebarsTemplate(templateSource, "SwaggerUi", new
+                {
+                    Namespace = newAssemblyNamespace
+                }, directoryInfo);
+            }
+
+            return null;
+        }
+        
+        protected static SyntaxTree CreateSyntaxTreeFromHandlebarsTemplate(string templateSource, string name,
+            object functionDefinition, DirectoryInfo directoryInfo)
+        {
+            Func<object, string> template = Handlebars.Compile(templateSource);
+
+            string outputCode = template(functionDefinition);
+            OutputDiagnosticCode(directoryInfo, name, outputCode);
+
+            SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(outputCode, path:$"{name}.cs");
+            return syntaxTree;
         }
         
         protected static List<string> ResolveLocationsWithExistingReferences(string outputBinaryFolder, IReadOnlyCollection<string> locations)
@@ -102,59 +163,10 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             return resolvedLocations;
         }
         
-        protected List<PortableExecutableReference> BuildReferenceSet(List<string> resolvedLocations,
-            string[] manifestResoureNames,
-            string manifestResourcePrefix,
-            CompileTargetEnum compileTarget)
+        protected List<PortableExecutableReference> BuildReferenceSet(List<string> resolvedLocations)
         {
             List<PortableExecutableReference> references =
                 resolvedLocations.Select(x => MetadataReference.CreateFromFile(x)).ToList();
-            // Add our references - if the reference is to a library that forms part of NET Standard 2.0 then make sure we add
-            // the reference from the embedded NET Standard reference set - although our target is NET Standard the assemblies
-            // in the output folder of the Function App may be NET Core assemblies.
-            /*List<PortableExecutableReference> references = resolvedLocations.Select(x =>
-            {
-                if (compileTarget == CompileTargetEnum.NETStandard20)
-                {
-                    string assemblyFilename = Path.GetFileName(x);
-                    string manifestResourceName =
-                        manifestResoureNames.SingleOrDefault(m =>
-                            String.Equals(assemblyFilename, m, StringComparison.CurrentCultureIgnoreCase));
-                    if (manifestResourceName != null)
-                    {
-                        using (Stream lib = GetType().Assembly
-                            .GetManifestResourceStream(String.Concat(manifestResourcePrefix, manifestResourceName)))
-                        {
-                            return MetadataReference.CreateFromStream(lib);
-                        }
-                    }
-                }
-
-                return MetadataReference.CreateFromFile(x);
-
-            }).ToList();*/
-
-            /*if (compileTarget == CompileTargetEnum.NETStandard20)
-            {
-                using (Stream netStandard = GetType().Assembly
-                    .GetManifestResourceStream("FunctionMonkey.Compiler.Core.references.netstandard2._0.netstandard.dll"))
-                {
-                    references.Add(MetadataReference.CreateFromStream(netStandard));
-                }
-
-                using (Stream netStandard = GetType().Assembly
-                    .GetManifestResourceStream("FunctionMonkey.Compiler.Core.references.netstandard2._0.System.Runtime.dll"))
-                {
-                    references.Add(MetadataReference.CreateFromStream(netStandard));
-                }
-
-                using (Stream systemIo = GetType().Assembly
-                    .GetManifestResourceStream(String.Concat(manifestResourcePrefix, "System.IO.dll")))
-                {
-                    references.Add(MetadataReference.CreateFromStream(systemIo));
-                }
-            }*/
-
             return references;
         }
         
@@ -163,14 +175,9 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             Type backlinkType,
             PropertyInfo backlinkPropertyInfo,
             string newAssemblyNamespace,
-            string outputAuthoredSourceFolder)
+            DirectoryInfo outputAuthoredSourceFolder)
         {
             if (backlinkType == null) return null; // back link referencing has been disabled
-            DirectoryInfo directoryInfo =  outputAuthoredSourceFolder != null ? new DirectoryInfo(outputAuthoredSourceFolder) : null;
-            if (directoryInfo != null && !directoryInfo.Exists)
-            {
-                directoryInfo = null;
-            }
             
             // Now we need to create a class that references the assembly with the configuration builder
             // otherwise the reference will be optimised away by Roslyn and it will then never get loaded
@@ -200,18 +207,18 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             }
             
             string outputLinkBackCode = linkBackTemplate(linkBackModel);
-            OutputDiagnosticCode(directoryInfo, "ReferenceLinkBack", outputLinkBackCode);
+            OutputDiagnosticCode(outputAuthoredSourceFolder, "ReferenceLinkBack", outputLinkBackCode);
             SyntaxTree linkBackSyntaxTree = CSharpSyntaxTree.ParseText(outputLinkBackCode);
             return linkBackSyntaxTree;
         }
 
         private IReadOnlyCollection<string> GetReferenceLocations(
             IReadOnlyCollection<string> externalAssemblyLocations,
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             bool isFSharpProject
             )
         {
-            HashSet<string> locations =  new HashSet<string>(BuildCandidateReferenceList(compileTarget, isFSharpProject));
+            HashSet<string> locations =  new HashSet<string>(BuildCandidateReferenceList(compilerOptions, isFSharpProject));
             locations.Add(typeof(Task).GetTypeInfo().Assembly.Location);
             locations.Add(typeof(Runtime).GetTypeInfo().Assembly.Location);
             
@@ -220,23 +227,20 @@ namespace FunctionMonkey.Compiler.Core.Implementation
                 locations.Add(typeof(FSharpOption<>).Assembly.Location);
             }
 
-            //if (compileTarget == CompileTargetEnum.NETCore21)
-            //{
-                // we're a 3.x assembly so we can use our assemblies
-                Assembly[] currentAssemblies = AppDomain.CurrentDomain.GetAssemblies();
-
-                locations.Add(currentAssemblies.Single(x => x.GetName().Name == "netstandard").Location);
-                locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Runtime").Location); // System.Runtime
-                locations.Add(typeof(TargetFrameworkAttribute).Assembly.Location); // NetCoreLib
-                locations.Add(typeof(System.Linq.Enumerable).Assembly.Location); // System.Linq
-                locations.Add(typeof(System.Security.Claims.ClaimsPrincipal).Assembly.Location);
-                locations.Add(typeof(System.Uri).Assembly.Location);
-                locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Collections").Location);
-                locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Threading").Location);
-                locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Threading.Tasks").Location);
-            //}
             
-            foreach (string externalAssemblyLocation in externalAssemblyLocations)
+            Assembly[] currentAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+
+            locations.Add(currentAssemblies.Single(x => x.GetName().Name == "netstandard").Location);
+            locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Runtime").Location); // System.Runtime
+            locations.Add(typeof(TargetFrameworkAttribute).Assembly.Location); // NetCoreLib
+            locations.Add(typeof(System.Linq.Enumerable).Assembly.Location); // System.Linq
+            locations.Add(typeof(System.Security.Claims.ClaimsPrincipal).Assembly.Location);
+            locations.Add(typeof(System.Uri).Assembly.Location);
+            locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Collections").Location);
+            locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Threading").Location);
+            locations.Add(currentAssemblies.Single(x => x.GetName().Name == "System.Threading.Tasks").Location);
+
+                foreach (string externalAssemblyLocation in externalAssemblyLocations)
             {
                 locations.Add(externalAssemblyLocation);
             }
@@ -249,10 +253,10 @@ namespace FunctionMonkey.Compiler.Core.Implementation
             string outputBinaryFolder,
             string outputAssemblyName,
             string assemblyNamespace,
-            CompileTargetEnum compileTarget,
+            CompilerOptions compilerOptions,
             bool isFSharpProject)
         {
-            IReadOnlyCollection<string> locations = GetReferenceLocations(externalAssemblyLocations, compileTarget, isFSharpProject);
+            IReadOnlyCollection<string> locations = GetReferenceLocations(externalAssemblyLocations, compilerOptions, isFSharpProject);
             const string manifestResourcePrefix = "FunctionMonkey.Compiler.references.netstandard2._0.";
             // For each assembly we've found we need to check and see if it is already included in the output binary folder
             // If it is then its referenced already by the function host and so we add a reference to that version.
@@ -263,7 +267,7 @@ namespace FunctionMonkey.Compiler.Core.Implementation
                 .Select(x => x.Substring(manifestResourcePrefix.Length))
                 .ToArray();
 
-            List<PortableExecutableReference> references = BuildReferenceSet(resolvedLocations, manifestResoureNames, manifestResourcePrefix, compileTarget);
+            List<PortableExecutableReference> references = BuildReferenceSet(resolvedLocations);
             
             CSharpCompilation compilation = CSharpCompilation.Create(assemblyNamespace) //(outputAssemblyName)
                     .WithOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))

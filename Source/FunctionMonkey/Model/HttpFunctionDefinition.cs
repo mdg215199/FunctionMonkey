@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using FunctionMonkey.Abstractions.Builders;
 using FunctionMonkey.Abstractions.Builders.Model;
@@ -17,6 +18,13 @@ namespace FunctionMonkey.Model
         public HttpFunctionDefinition(Type commandType, Type explicitCommandResultType) : base("", commandType, explicitCommandResultType)
         {
         }
+
+        // This is used to determine if the command requires a body on an ASP.Net controller
+        public bool CommandRequiresBody => CommandType.GetProperties().Length > 0;
+
+        public bool HasQueryParametersWithoutHeaderMappingAndRouteParameters => QueryParametersWithoutHeaderMapping.Any() && RouteParameters.Any();
+
+        public bool HasRouteParameters => RouteParameters.Any();
         
         public HashSet<HttpMethod> Verbs { get; set; } = new HashSet<HttpMethod>();
 
@@ -31,6 +39,12 @@ namespace FunctionMonkey.Model
         public bool HasRoute => Route != null;
 
         public IReadOnlyCollection<HttpParameter> QueryParameters { get; set; }
+
+        public IReadOnlyCollection<HttpParameter> QueryParametersWithHeaderMapping =>
+            QueryParameters.Where(x => x.HasHeaderMapping).ToArray();
+        
+        public IReadOnlyCollection<HttpParameter> QueryParametersWithoutHeaderMapping =>
+            QueryParameters.Where(x => !x.HasHeaderMapping).ToArray();
         
         public IReadOnlyCollection<HttpParameter> PossibleFormProperties { get; set; }
 
@@ -49,6 +63,9 @@ namespace FunctionMonkey.Model
         public bool IsValidationResult { get; set; }
         
         public Type TokenValidatorType { get; set; }
+
+        public bool IsBodyBased =>
+            !(Verbs.Contains(HttpMethod.Get) || Verbs.Contains(HttpMethod.Delete) || Verbs.Count == 0);
 
         public string TokenValidatorTypeName => TokenValidatorType?.EvaluateType();
 
